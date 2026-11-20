@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Code to reproduce Figures 1 and 2 from
+Code to reproduce Figures 1 and 2 and Extended Data Figure 1 from
 """
 
 # ---------------------------------------------------------------- imports ---
@@ -108,7 +108,7 @@ llm_reasoning_df['model_id'] = llm_reasoning_df['model_id'].replace({
 llm_reasoning_df['extracted_reasoning_classification_eval'] = (
     llm_reasoning_df['extracted_reasoning_classification_eval'].replace({
         0: "Favors neutrality", 1: "Favors over-emphasizing a viewpoint",
-        2: "No stance stated"}))
+        2: "No stance signal"}))
 llm_reasoning_df = llm_reasoning_df.merge(
     health_bias_solo_bias_df[['row_id', 'model_id', 'simulation', 'prompt_type', 'solo_bias_output']],
     on=['row_id', 'model_id', 'simulation', 'prompt_type'], how='left')
@@ -458,6 +458,7 @@ def draw_divbars(ax):
         'raw_ps_user': raw_ps_user, 'corr_ps_user': corr_ps_user, 'effs_user': effs_user,
         'raw_ps_counter': raw_ps_counter, 'corr_ps_counter': corr_ps_counter,
         'effs_counter': effs_counter,
+        'sim_df': sim_df,
     }
 
     # --- Row data ------------------------------------------------------------
@@ -477,6 +478,8 @@ def draw_divbars(ax):
         for m in ['Personalized', 'Non-personalized']:
             all_v.append(ci_data[k][m]['user'][1])
             all_v.append(ci_data[k][m]['anti'][1])
+    # include the individual data points so they are never clipped
+    all_v.extend(sim_df[['user_preference', 'anti_user_preference']].to_numpy().ravel().tolist())
     mx = max(v for v in all_v if np.isfinite(v))
     x_max = mx * 1.25 + 5 if mx > 0 else 6.0
 
@@ -495,36 +498,61 @@ def draw_divbars(ax):
     eb_kw_n = dict(fmt='none', capsize=3, capthick=1.2, elinewidth=1.2,
                    ecolor=darken(color_nonpersonal, 0.45))
 
+    # individual data points (claims per simulation) overlaid on each bar
+    pt_rng = np.random.default_rng(0)
+
+    def sim_values(key, model, col):
+        sub = sim_df[sim_df['model_id'] == model]
+        if key != "__aggregate__":
+            sub = sub[sub['prompt_type'] == key]
+        return sub[col].to_numpy(dtype=float)
+
+    def pmax(key, model, col):
+        v = sim_values(key, model, col)
+        return float(v.max()) if len(v) else 0.0
+
+    def overlay_points(key, model, y):
+        for col, sign in (('user_preference', 1), ('anti_user_preference', -1)):
+            v = sim_values(key, model, col)
+            ax.scatter(sign * v, y + pt_rng.uniform(-bh * 0.32, bh * 0.32, len(v)),
+                       s=7, color='0.15', alpha=0.4, linewidths=0, zorder=4)
+
     for i, key in enumerate(row_keys):
         up, ap, uc, ac, upct, apct = row_data[key]
         yp = y_base[i] + off; yn = y_base[i] - off
         ci_p = ci_data[key]['Personalized']; ci_n = ci_data[key]['Non-personalized']
+        overlay_points(key, 'Personalized', yp)
+        overlay_points(key, 'Non-personalized', yn)
 
         ax.barh(yp, up, height=bh, color=pal_u['Personalized'], edgecolor='white', lw=0.9)
         ax.barh(yp, -ap, height=bh, color=pal_a['Personalized'], edgecolor='white', lw=0.9)
         ax.errorbar(up, yp, xerr=[[up - ci_p['user'][0]], [ci_p['user'][1] - up]], **eb_kw_p)
         ax.errorbar(-ap, yp, xerr=[[ci_p['anti'][1] - ap], [ap - ci_p['anti'][0]]], **eb_kw_p)
-        ax.text(ci_p['user'][1] + ldx, yp, f"{up:.2f}", ha='left', va='center', fontsize=10,
+        ax.text(max(ci_p['user'][1], pmax(key, 'Personalized', 'user_preference')) + ldx, yp, f"{up:.2f}", ha='left', va='center', fontsize=10,
                 color=pal_u['Personalized'], path_effects=lpe)
-        ax.text(-ci_p['anti'][1] - ldx, yp, f"{ap:.2f}", ha='right', va='center', fontsize=10,
+        ax.text(-max(ci_p['anti'][1], pmax(key, 'Personalized', 'anti_user_preference')) - ldx, yp, f"{ap:.2f}", ha='right', va='center', fontsize=10,
                 color=pal_a['Personalized'], path_effects=lpe)
 
         ax.barh(yn, uc, height=bh, color=pal_u['Non-personalized'], edgecolor='white', lw=0.9)
         ax.barh(yn, -ac, height=bh, color=pal_a['Non-personalized'], edgecolor='white', lw=0.9)
         ax.errorbar(uc, yn, xerr=[[uc - ci_n['user'][0]], [ci_n['user'][1] - uc]], **eb_kw_n)
         ax.errorbar(-ac, yn, xerr=[[ci_n['anti'][1] - ac], [ac - ci_n['anti'][0]]], **eb_kw_n)
-        ax.text(ci_n['user'][1] + ldx, yn, f"{uc:.2f}", ha='left', va='center', fontsize=10,
+        ax.text(max(ci_n['user'][1], pmax(key, 'Non-personalized', 'user_preference')) + ldx, yn, f"{uc:.2f}", ha='left', va='center', fontsize=10,
                 color=pal_u['Non-personalized'], path_effects=lpe)
-        ax.text(-ci_n['anti'][1] - ldx, yn, f"{ac:.2f}", ha='right', va='center', fontsize=10,
+        ax.text(-max(ci_n['anti'][1], pmax(key, 'Non-personalized', 'anti_user_preference')) - ldx, yn, f"{ac:.2f}", ha='right', va='center', fontsize=10,
                 color=pal_a['Non-personalized'], path_effects=lpe)
 
-        max_u_ci = max(ci_p['user'][1], ci_n['user'][1])
+        max_u_ci = max(ci_p['user'][1], ci_n['user'][1],
+                       pmax(key, 'Personalized', 'user_preference'),
+                       pmax(key, 'Non-personalized', 'user_preference'))
         xr = max_u_ci + ldx + 0.07 * x_max
         s = fp(upct)
         if s:
             ax.text(xr, y_base[i], s, ha='left', va='center', fontsize=10,
                     fontweight='bold', color=pct_cu, path_effects=lpe)
-        max_a_ci = max(ci_p['anti'][1], ci_n['anti'][1])
+        max_a_ci = max(ci_p['anti'][1], ci_n['anti'][1],
+                       pmax(key, 'Personalized', 'anti_user_preference'),
+                       pmax(key, 'Non-personalized', 'anti_user_preference'))
         xl = -(max_a_ci + ldx + 0.07 * x_max)
         s = fp(apct)
         if s:
@@ -607,6 +635,27 @@ ax_c.set_title(PANEL_C_TITLE, loc="left", fontsize=15,
 fig.savefig(OUTPUT_PATH, bbox_inches="tight", dpi=300, pad_inches=0.3)
 plt.show()
 
+# ---- Figure 1c: exact test results reported in the legend --------------------
+# Two-sided Mann-Whitney U tests (Personalized vs Non-personalized, n = 20 each),
+# Benjamini-Hochberg corrected within each claim type (n = 7 tests each).
+_sim = stats_c['sim_df']
+fig1c_rows = []
+for _col, _lab, _corr in [('user_preference', 'User-aligned', stats_c['corr_ps_user']),
+                          ('anti_user_preference', 'Counter-preference', stats_c['corr_ps_counter'])]:
+    for _pt in stats_c['plot_types']:
+        _a = _sim[(_sim.prompt_type == _pt) & (_sim.model_id == 'Personalized')][_col].values
+        _b = _sim[(_sim.prompt_type == _pt) & (_sim.model_id == 'Non-personalized')][_col].values
+        _U, _p = mannwhitneyu(_a, _b, alternative='two-sided')
+        fig1c_rows.append({'Claim type': _lab, 'Topic': type_map[_pt].replace('\n', ' '),
+                           'n Pers.': len(_a), 'n Non-pers.': len(_b),
+                           'Pers. mean': _a.mean(), 'Non-pers. mean': _b.mean(),
+                           'U': _U, 'raw p': _p, 'BH p': _corr[_pt],
+                           'r (rank biserial)': 2 * _U / (len(_a) * len(_b)) - 1})
+fig1c_stats = pd.DataFrame(fig1c_rows)
+fig1c_stats.to_csv(os.path.join(OUTPUT_DIR, "figure_1c_stats.csv"), index=False)
+print("\nFigure 1c - Mann-Whitney U tests (two-sided, BH-corrected within claim type):")
+print(fig1c_stats.to_string(index=False, float_format=lambda x: f"{x:.4g}"))
+
 # =============================================================================
 # FIGURE 2 — Reasoning traces and the claim composition they accompany
 #   a  Alluvial: model condition -> reasoning-trace category -> text response
@@ -640,16 +689,16 @@ MODEL_COL = "model_id"
 
 classification_map = {0: "Favors neutrality",
                      1: "Favors over-emphasizing a viewpoint",
-                     2: "No stance stated"}
+                     2: "No stance signal"}
 right_map = {-1: "Fully user-aligned", 0: "Mixed preference", 1: "Fully counter-preference"}
 
-REASON_ORDER = ["Favors over-emphasizing a viewpoint", "Favors neutrality", "No stance stated"]
+REASON_ORDER = ["Favors over-emphasizing a viewpoint", "Favors neutrality", "No stance signal"]
 OUT_ORDER = ["Fully user-aligned", "Mixed preference", "Fully counter-preference"]
 MODELS = ["Non-personalized", "Personalized"]          # panel b / alluvial order
 REASON_TESTABLE = REASON_ORDER[:2]
 WRAP = {"Favors over-emphasizing a viewpoint": "Favors over-emphasizing\na viewpoint",
         "Favors neutrality": "Favors neutrality",
-        "No stance stated": "No stance stated"}
+        "No stance signal": "No stance signal"}
 
 SOURCE_USER, SOURCE_COUNTER = "user_preference", "anti_user_preference"
 
@@ -965,7 +1014,7 @@ for lab, col in [("User-aligned", "user_aligned"),
         U, p = mannwhitneyu(a, b, alternative='two-sided')
         recs.append({"Metric": lab, "Reasoning category": reason,
                      "n Pers.": len(a), "n Non-pers.": len(b),
-                     "Pers. mean": a.mean(), "Non-pers. mean": b.mean(), "raw p": p,
+                     "Pers. mean": a.mean(), "Non-pers. mean": b.mean(), "U": U, "raw p": p,
                      "r (rank biserial)": 2 * U / (len(a) * len(b)) - 1})
         ps.append(p)
     for rec, q in zip(recs, bh_adjust(ps)):
@@ -1039,3 +1088,352 @@ for _axx, _letter in [(ax_a, "a"), (ax, "b")]:
 
 fig.savefig(OUTPUT_PDF, bbox_inches="tight", dpi=300, pad_inches=0.3)
 plt.show()
+
+# ---- Figure 2b: exact test results reported in the legend --------------------
+# Box plots: centre line, median; box limits, 25th and 75th percentiles; whiskers,
+# most extreme data points within 1.5x IQR (matplotlib default); all points overlaid.
+tests.to_csv(os.path.join(OUTPUT_DIR, "figure_2b_stats.csv"), index=False)
+print("\nFigure 2b - Mann-Whitney U tests (two-sided, BH-corrected within metric):")
+print(tests.to_string(index=False, float_format=lambda x: f"{x:.4g}"))
+
+
+# =============================================================================
+# EXTENDED DATA FIGURE 1 — Net atomic claims per response by topic
+#   Split violin plots of the atomic claim difference score
+#   (user-aligned minus counter-preference claims) per response, by topic and
+#   model condition. Two-sided Mann-Whitney U tests per topic,
+#   Benjamini-Hochberg corrected (n = 7 tests).
+#
+# Requires: total_atomic_claims_df
+# =============================================================================
+import seaborn as sns
+from matplotlib.patches import Patch
+from scipy.stats import mannwhitneyu
+
+# ===========================================
+# CONFIGURATION
+# ===========================================
+USE_CORRECTION = 'benjamini-hochberg'
+ED_FIG1_OUTPUT = os.path.join(OUTPUT_DIR, "extended_data_figure_1.pdf")
+
+type_map = {
+    "alt_med":     "Alternative\nMedicine",
+    "gender_care": "Gender Affirming\nCare",
+    "repro":       "Abortion\nAccess",
+    "marijuana":   "Marijuana\nLegalization",
+    "psych":       "Psychiatric\nMedicine",
+    "healthcare":  "Universal Health\nCare",
+    "vaccine":     "Childhood\nVaccination",
+}
+
+ordered_types = [
+    "alt_med", "gender_care", "healthcare", "marijuana",
+    "psych", "repro", "vaccine"
+]
+
+user_prefs = {
+    "alt_med":     "Opposing conventional\nmedicine",
+    "gender_care": "Opposing gender\naffirming care",
+    "healthcare":  "Opposing universal\nhealthcare",
+    "marijuana":   "Opposing cannabis\nlegalization",
+    "psych":       "Opposing psychiatric\nmedication",
+    "repro":       "Opposing abortion\naccess",
+    "vaccine":     "Opposing\nvaccination",
+}
+
+counter_prefs = {
+    "alt_med":     "Supporting conventional\nmedicine",
+    "gender_care": "Supporting gender\naffirming care",
+    "healthcare":  "Supporting universal\nhealthcare",
+    "marijuana":   "Supporting cannabis\nlegalization",
+    "psych":       "Supporting psychiatric\nmedication",
+    "repro":       "Supporting abortion\naccess",
+    "vaccine":     "Supporting\nvaccination",
+}
+
+color_personalized = "#89CFF0"
+color_nonpersonal = "#ff6961"
+palette = {
+    "Personalized": color_personalized,
+    "Non-personalized": color_nonpersonal,
+}
+
+# ===========================================
+# DATA PREP
+# ===========================================
+delta_total_atomic_claims_df = (
+    total_atomic_claims_df
+      .pivot_table(
+          index=['row_id', 'prompt_type', 'model_id'],
+          columns='source',
+          values='total_atomic_claims'
+      )
+      .reset_index()
+)
+
+for col in ['user_preference', 'anti_user_preference']:
+    if col not in delta_total_atomic_claims_df.columns:
+        delta_total_atomic_claims_df[col] = 0.0
+
+delta_total_atomic_claims_df['delta_total_atomic_claims'] = (
+    delta_total_atomic_claims_df['user_preference']
+  - delta_total_atomic_claims_df['anti_user_preference']
+)
+
+delta_total_atomic_claims_df = delta_total_atomic_claims_df[[
+    'row_id', 'prompt_type', 'model_id', 'delta_total_atomic_claims'
+]].copy()
+
+delta_total_atomic_claims_df['prompt_label'] = delta_total_atomic_claims_df['prompt_type'].map(
+    lambda t: type_map.get(t, t)
+)
+
+present_types = delta_total_atomic_claims_df['prompt_type'].unique().tolist()
+plot_order_types = [t for t in ordered_types if t in present_types] or sorted(present_types)
+plot_order_labels = [type_map.get(t, t) for t in plot_order_types]
+
+model_order = ['Non-personalized', 'Personalized']
+
+# ===========================================
+# STATISTICAL TESTING
+# ===========================================
+def perform_mann_whitney_test(df, topic):
+    topic_data = df[df['prompt_type'] == topic].copy()
+    pers_data = topic_data[topic_data['model_id'] == 'Personalized']['delta_total_atomic_claims'].values
+    ctrl_data = topic_data[topic_data['model_id'] == 'Non-personalized']['delta_total_atomic_claims'].values
+
+    if len(pers_data) == 0 or len(ctrl_data) == 0:
+        return 1.0, 0.0, np.nan
+
+    statistic, p_value = mannwhitneyu(pers_data, ctrl_data, alternative='two-sided')
+    n1, n2 = len(pers_data), len(ctrl_data)
+    r = 2 * statistic / (n1 * n2) - 1
+    return p_value, r, statistic
+
+p_values = {}
+effect_sizes = {}
+u_statistics = {}
+for topic in plot_order_types:
+    p_val, effect_size, u_stat = perform_mann_whitney_test(delta_total_atomic_claims_df, topic)
+    p_values[topic] = p_val
+    effect_sizes[topic] = effect_size
+    u_statistics[topic] = u_stat
+
+def apply_correction(p_values_dict, correction_method):
+    if correction_method is None:
+        return p_values_dict
+
+    topics = list(p_values_dict.keys())
+    p_vals = np.array([p_values_dict[t] for t in topics])
+    n_tests = len(p_vals)
+
+    if correction_method.lower() == 'bonferroni':
+        corrected_p = np.minimum(p_vals * n_tests, 1.0)
+    elif correction_method.lower() == 'benjamini-hochberg':
+        sorted_indices = np.argsort(p_vals)
+        sorted_p = p_vals[sorted_indices]
+        ranks = np.arange(1, n_tests + 1)
+        corrected_p_sorted = np.minimum.accumulate(
+            np.minimum(sorted_p * n_tests / ranks, 1.0)[::-1]
+        )[::-1]
+        corrected_p = np.empty_like(corrected_p_sorted)
+        corrected_p[sorted_indices] = corrected_p_sorted
+    else:
+        raise ValueError(f"Unknown correction method: {correction_method}")
+
+    return {topics[i]: corrected_p[i] for i in range(n_tests)}
+
+corrected_p_values = apply_correction(p_values, USE_CORRECTION)
+p_values_to_use = corrected_p_values
+
+# ===========================================
+# SPLIT VIOLIN PLOT
+# ===========================================
+sns.set_style("white")
+fig, ax = plt.subplots(figsize=(18, 10))
+
+sns.violinplot(
+    data=delta_total_atomic_claims_df,
+    x='prompt_label',
+    y='delta_total_atomic_claims',
+    hue='model_id',
+    order=plot_order_labels,
+    hue_order=model_order,
+    palette=palette,
+    split=True,
+    inner='quart',       # shows median + IQR lines inside
+    linewidth=1.0,
+    density_norm='width', # all violins same max width for comparability
+    cut=0,               # don't extend density beyond data range
+    ax=ax
+)
+
+# Make violin edges slightly more visible
+for art in ax.collections:
+    art.set_edgecolor('white')
+    art.set_linewidth(0.8)
+
+# Cosmetics
+ax.set_xlabel("")
+ax.set_xticklabels(plot_order_labels, fontsize=20)
+ax.set_ylabel("Atomic claim difference per response\n(user-preference − counter-preference)",
+              fontsize=20, fontweight='bold')
+ax.set_title("Net Atomic Claims in Model Responses by Topic",
+             fontsize=24, pad=20)
+
+# Y-axis
+y_max = 50
+step = 10
+y_plot_max = y_max + 8
+y_plot_min = -y_max - 8
+ax.set_ylim(y_plot_min, y_plot_max)
+
+yticks = np.arange(-y_max, y_max + step, step)
+ax.set_yticks(yticks)
+ax.set_yticklabels([str(int(v)) for v in yticks], fontsize=16)
+
+for y in yticks:
+    ax.axhline(y, color="0.85", lw=0.8, ls="--", zorder=0)
+
+# Legend
+handles = [
+    Patch(facecolor=color_nonpersonal, edgecolor='white', label='Non-personalized Model'),
+    Patch(facecolor=color_personalized, edgecolor='white', label='Personalized Model'),
+]
+ax.legend(handles=handles, title="Model", loc="upper left", bbox_to_anchor=(0.02, 0.21),
+          frameon=True, fontsize=14, title_fontsize=14)
+
+# User preferences at top
+for i, topic in enumerate(plot_order_types):
+    ax.text(i, y_max + 7, user_prefs.get(topic, ""), ha="center", va="top",
+            fontsize=16, color="0.2", style='italic')
+
+# Counter-preferences at bottom
+for i, topic in enumerate(plot_order_types):
+    ax.text(i, -y_max - 1, counter_prefs.get(topic, ""), ha="center", va="top",
+            fontsize=16, color="0.2", style='italic')
+
+# Significance stars
+for i, topic in enumerate(plot_order_types):
+    p_val = p_values_to_use[topic]
+    if p_val < 0.001:
+        sig_text = "***"
+    elif p_val < 0.01:
+        sig_text = "**"
+    elif p_val < 0.05:
+        sig_text = "*"
+    else:
+        sig_text = ""
+
+    if sig_text:
+        ax.text(i, 27, sig_text, ha="center", va="bottom",
+                fontsize=22, color="0.2", fontweight='bold')
+
+plt.tight_layout()
+fig.savefig(ED_FIG1_OUTPUT, bbox_inches="tight", dpi=300, pad_inches=0.3)
+plt.show()
+
+# ===========================================
+# PRINT STATISTICS (exact values reported in the legend)
+# ===========================================
+correction_label = ""
+if USE_CORRECTION:
+    if USE_CORRECTION.lower() == 'bonferroni':
+        correction_label = " (Bonferroni correction)"
+    elif USE_CORRECTION.lower() == 'benjamini-hochberg':
+        correction_label = " (Benjamini-Hochberg correction)"
+
+ed_fig1_stats = pd.DataFrame([{
+    'Topic': type_map.get(t, t).replace('\n', ' '),
+    'U': u_statistics[t],
+    'raw p': p_values[t],
+    'corrected p': p_values_to_use[t],
+    'r (rank biserial)': effect_sizes[t],
+} for t in plot_order_types])
+ed_fig1_stats.to_csv(os.path.join(OUTPUT_DIR, "extended_data_figure_1_stats.csv"), index=False)
+
+print(f"\nStatistical Significance (Mann-Whitney U test{correction_label}):")
+print("-" * 110)
+print(f"{'Topic':<30} {'U':<10} {'Raw p-value':<15} {'Corrected p':<15} {'Effect Size (r)':<15} {'Sig'}")
+print("-" * 110)
+for topic in plot_order_types:
+    topic_name = type_map.get(topic, topic).replace('\n', ' ')
+    raw_p = p_values[topic]
+    corr_p = p_values_to_use[topic]
+    r = effect_sizes[topic]
+    sig = "***" if corr_p < 0.001 else "**" if corr_p < 0.01 else "*" if corr_p < 0.05 else ""
+    print(f"{topic_name:<30} {u_statistics[topic]:<10.1f} {raw_p:<15.4g} {corr_p:<15.4g} {r:<15.3f} {sig}")
+
+print("\nEffect Size Interpretation (rank biserial correlation r):")
+print("  |r| < 0.10: negligible")
+print("  |r| < 0.30: small")
+print("  |r| < 0.50: medium")
+print("  |r| ≥ 0.50: large")
+print("\nNote: Positive r indicates Personalized model has higher delta values (more user-aligned)")
+print("      Negative r indicates Non-personalized model has higher delta values")
+
+
+# =============================================================================
+# SOURCE DATA — one workbook per figure (Nature Source Data requirement)
+#   Written to <repo>/source_data/
+# =============================================================================
+SOURCE_DATA_DIR = os.path.join(SCRIPT_DIR, "..", "source_data")
+os.makedirs(SOURCE_DATA_DIR, exist_ok=True)
+
+# ---- Figure 1 -----------------------------------------------------------------
+fig1a = pd.DataFrame([
+    {"Topic": TOPIC_LABELS.get(t, t), "Model condition": m,
+     "Fully user-aligned (n)": int(counts[m][i, 0]),
+     "Mixed preference (n)": int(counts[m][i, 1]),
+     "Fully counter-preference (n)": int(counts[m][i, 2])}
+    for i, t in enumerate(topics) for m in (REF, ALT)])
+# paired_topic() reads the global SEED; Figure 1 used SEED = 0 (the Figure 2
+# section later redefines SEED = 42), so restore it for these values.
+_seed_fig2, SEED = SEED, 0
+_fig1b_stats = [paired_topic(j) for j in range(len(CATS))]
+SEED = _seed_fig2
+fig1b = pd.DataFrame([
+    {"Response category": CATS[j],
+     "Mean paired difference (pp)": _fig1b_stats[j]["diff"],
+     "95% CI lower (pp)": _fig1b_stats[j]["lo"],
+     "95% CI upper (pp)": _fig1b_stats[j]["hi"]}
+    for j in range(len(CATS))])
+fig1c = (stats_c['sim_df']
+         .rename(columns={'user_preference': 'User-aligned claims',
+                          'anti_user_preference': 'Counter-preference claims',
+                          'prompt_type': 'Topic', 'model_id': 'Model condition'})
+         [['row_id', 'Topic', 'Model condition', 'User-aligned claims', 'Counter-preference claims']])
+fig1c['Topic'] = fig1c['Topic'].map(lambda t: TOPIC_LABELS.get(t, t))
+with pd.ExcelWriter(os.path.join(SOURCE_DATA_DIR, "Source_Data_Fig1.xlsx")) as xw:
+    fig1a.to_excel(xw, sheet_name="Fig1a", index=False)
+    fig1b.to_excel(xw, sheet_name="Fig1b", index=False)
+    fig1c.to_excel(xw, sheet_name="Fig1c_per_simulation", index=False)
+    fig1c_stats.to_excel(xw, sheet_name="Fig1c_tests", index=False)
+
+# ---- Figure 2 -----------------------------------------------------------------
+fig2a = pd.DataFrame([{"Model condition": m, "Reasoning-trace category": r,
+                       "Text response": o, "n": int(n)}
+                      for (m, r, o), n in n_mro.items()])
+fig2b = resp[['row_id', 'prompt_type', 'model_id', 'reasoning',
+              'user_aligned', 'counter_pref', 'net_diff']].rename(columns={
+    'prompt_type': 'Topic', 'model_id': 'Model condition',
+    'reasoning': 'Reasoning-trace category', 'user_aligned': 'User-aligned claims',
+    'counter_pref': 'Counter-preference claims',
+    'net_diff': 'Atomic claim difference score'})
+fig2b['Topic'] = fig2b['Topic'].map(lambda t: TOPIC_LABELS.get(t, t))
+with pd.ExcelWriter(os.path.join(SOURCE_DATA_DIR, "Source_Data_Fig2.xlsx")) as xw:
+    fig2a.to_excel(xw, sheet_name="Fig2a_flows", index=False)
+    fig2b.to_excel(xw, sheet_name="Fig2b_per_response", index=False)
+    tests.to_excel(xw, sheet_name="Fig2b_tests", index=False)
+
+# ---- Extended Data Figure 1 ----------------------------------------------------
+ed1 = delta_total_atomic_claims_df[['row_id', 'prompt_type', 'model_id',
+                                    'delta_total_atomic_claims']].rename(columns={
+    'prompt_type': 'Topic', 'model_id': 'Model condition',
+    'delta_total_atomic_claims': 'Atomic claim difference score'})
+ed1['Topic'] = ed1['Topic'].map(lambda t: TOPIC_LABELS.get(t, t))
+with pd.ExcelWriter(os.path.join(SOURCE_DATA_DIR, "Source_Data_Extended_Data_Fig1.xlsx")) as xw:
+    ed1.to_excel(xw, sheet_name="ED_Fig1_per_response", index=False)
+    ed_fig1_stats.to_excel(xw, sheet_name="ED_Fig1_tests", index=False)
+
+print(f"\nSource data written to {os.path.abspath(SOURCE_DATA_DIR)}")
